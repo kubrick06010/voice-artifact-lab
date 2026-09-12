@@ -14,6 +14,7 @@ export class BrowserSpeechSynthesis {
     this.supported = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
     this.lang = lang || navigator.language || 'en-US';
     this.current = null;
+    this.finishCurrent = null;
   }
 
   speak(text) {
@@ -32,28 +33,39 @@ export class BrowserSpeechSynthesis {
       const voice = selectVoice(this.lang);
       if (voice) utterance.voice = voice;
 
-      utterance.onend = () => {
-        if (this.current === utterance) this.current = null;
-        resolve();
+      let settled = false;
+      const finish = (error = null) => {
+        if (settled) return;
+        settled = true;
+        if (this.current === utterance) {
+          this.current = null;
+          this.finishCurrent = null;
+        }
+        if (error) reject(error);
+        else resolve();
       };
 
+      utterance.onend = () => finish();
       utterance.onerror = event => {
-        if (this.current === utterance) this.current = null;
         if (event.error === 'canceled' || event.error === 'interrupted') {
-          resolve();
+          finish();
           return;
         }
-        reject(new Error(`Speech synthesis error: ${event.error}`));
+        finish(new Error(`Speech synthesis error: ${event.error}`));
       };
 
       this.current = utterance;
+      this.finishCurrent = () => finish();
       speechSynthesis.speak(utterance);
     });
   }
 
   cancel() {
     if (!this.supported) return;
+    const finish = this.finishCurrent;
     speechSynthesis.cancel();
+    finish?.();
     this.current = null;
+    this.finishCurrent = null;
   }
 }
