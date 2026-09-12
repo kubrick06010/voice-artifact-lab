@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b0f14" />
+  <meta name="description" content="Voice-only assistant interaction prototype." />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>Voice Artifact Lab</title>
+</head>
+<body>
+  <main class="shell" data-state="idle">
+    <div class="brand" aria-hidden="true">VOICE ARTIFACT LAB</div>
+
+    <section class="voice-stage" aria-live="polite">
+      <button id="orb" class="orb" type="button" aria-label="Activate microphone">
+        <span class="orb-core"></span>
+        <span class="orb-ring orb-ring-a"></span>
+        <span class="orb-ring orb-ring-b"></span>
+      </button>
+
+      <div class="status-wrap">
+        <div id="status" class="status">Tap to begin</div>
+        <div id="detail" class="detail">Local demo — no audio leaves this browser</div>
+      </div>
+    </section>
+
+    <div class="controls">
+      <button id="mute" class="control" type="button" disabled aria-pressed="false">Mute</button>
+      <button id="stop" class="control" type="button" disabled>End</button>
+    </div>
+
+    <div id="meter" class="meter" aria-hidden="true">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+
+    <p id="error" class="error" hidden></p>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
