@@ -1,3 +1,7 @@
+import { OllamaProvider } from './providers/ollama.js';
+import { BrowserSpeechRecognition } from './speech/browser-stt.js';
+import { BrowserSpeechSynthesis } from './speech/browser-tts.js';
+
 const shell = document.querySelector('.shell');
 const orb = document.querySelector('#orb');
 const statusEl = document.querySelector('#status');
@@ -6,15 +10,43 @@ const muteBtn = document.querySelector('#mute');
 const stopBtn = document.querySelector('#stop');
 const errorEl = document.querySelector('#error');
 const bars = [...document.querySelectorAll('#meter span')];
+const core = document.querySelector('.orb-core');
+
+const params = new URLSearchParams(location.search);
+const OLLAMA_BASE_URL = params.get('ollama') || 'http://127.0.0.1:11434';
+const REQUESTED_MODEL = params.get('model') || null;
+const SPEECH_LANG = params.get('lang') || navigator.language || 'es-ES';
+const DEBUG = params.get('debug') === '1';
+
+const SYSTEM_PROMPT = [
+  'You are a voice assistant in a voice-only interface.',
+  'Reply in the same language the user speaks unless they ask for another language.',
+  'Write for speech, not for a screen: be natural, concise, and conversational.',
+  'Do not use markdown, headings, tables, citations, or formatting symbols.',
+  'Prefer one or two short sentences unless the user explicitly asks for detail.',
+].join(' ');
 
 const COPY = {
-  idle: ['Tap to begin', 'Local demo — no audio leaves this browser'],
+  idle: ['Tap to begin', 'Ollama local • browser speech I/O'],
+  connecting: ['Connecting…', 'Checking local Ollama'],
   listening: ['Listening…', 'Speak naturally'],
-  thinking: ['Thinking…', 'Demo transition — no model call yet'],
-  speaking: ['Speaking…', 'Demo response state'],
+  thinking: ['Thinking…', 'Ollama is generating locally'],
+  speaking: ['Speaking…', 'Tap the orb to interrupt'],
   muted: ['Muted', 'Microphone capture is paused'],
-  error: ['Microphone unavailable', 'Check browser permissions and secure context'],
+  error: ['Unavailable', 'Check the message below'],
 };
+
+const STOP_PHRASES = new Set([
+  'goodbye',
+  'bye',
+  'stop listening',
+  'end conversation',
+  'adiós',
+  'adios',
+  'hasta luego',
+  'termina la conversación',
+  'termina la conversacion',
+]);
 
 let state = 'idle';
 let stream;
@@ -23,13 +55,44 @@ let analyser;
 let samples;
 let rafId;
 let muted = false;
-let speechStartedAt = 0;
-let lastVoiceAt = 0;
-let transitionTimer;
+let processing = false;
+let provider = null;
+let modelName = null;
+let sessionActive = false;
+let turnStage = 'idle';
+let conversation = [{ role: 'system', content: SYSTEM_PROMPT }];
+const debugEvents = [];
 
-const VOICE_THRESHOLD = 0.045;
-const SPEECH_CONFIRM_MS = 180;
-const SILENCE_TO_THINK_MS = 850;
+function trace(stage, data = {}) {
+  turnStage = stage;
+  const entry = { at: new Date().toISOString(), stage, ...data };
+  debugEvents.push(entry);
+  if (debugEvents.length > 50) debugEvents.shift();
+  console.debug('[voice-artifact]', entry);
+}
+
+window.__voiceArtifactDebug = {
+  events: debugEvents,
+  get state() { return state; },
+  get stage() { return turnStage; },
+  get model() { return modelName; },
+};
+
+const tts = new BrowserSpeechSynthesis({
+  lang: SPEECH_LANG,
+  onStart: ({ voice, lang }) => {
+    trace('tts-start', { voice, lang });
+    if (DEBUG && state === 'speaking') {
+      detailEl.textContent = `TTS ✓ ${voice || 'system default'} • ${lang}`;
+    }
+  },
+});
+
+const stt = new BrowserSpeechRecognition({
+  lang: SPEECH_LANG,
+  onTranscript: transcript => handleTranscript(transcript),
+  onError: error => handleSpeechRecognitionError(error),
+});
 
 function setState(next, detailOverride) {
   state = next;
@@ -39,6 +102,11 @@ function setState(next, detailOverride) {
   detailEl.textContent = detailOverride ?? detail;
 }
 
+function listeningDetail() {
+  const base = modelName ? `${modelName} • Ollama local` : COPY.listening[1];
+  return DEBUG ? `${base} • debug on` : base;
+}
+
 function setMeter(level = 0) {
   const multipliers = [0.55, 0.82, 1, 0.72, 0.48];
   bars.forEach((bar, index) => {
@@ -46,7 +114,6 @@ function setMeter(level = 0) {
     bar.style.height = `${height}px`;
   });
 
-  const core = document.querySelector('.orb-core');
   const scale = 1 + Math.min(0.14, level * 1.8);
   core.style.transform = `scale(${scale})`;
 }
@@ -60,44 +127,123 @@ function rmsLevel() {
 
 function monitor() {
   if (!analyser) return;
-
-  const now = performance.now();
-  const level = muted ? 0 : rmsLevel();
-  setMeter(level);
-
-  if (!muted && state === 'listening') {
-    if (level >= VOICE_THRESHOLD) {
-      if (!speechStartedAt) speechStartedAt = now;
-      lastVoiceAt = now;
-    } else if (speechStartedAt && now - speechStartedAt >= SPEECH_CONFIRM_MS && now - lastVoiceAt >= SILENCE_TO_THINK_MS) {
-      runDemoResponse();
-      speechStartedAt = 0;
-      lastVoiceAt = 0;
-    } else if (level < VOICE_THRESHOLD && now - lastVoiceAt > SILENCE_TO_THINK_MS) {
-      speechStartedAt = 0;
-    }
-  }
-
+  setMeter(muted ? 0 : rmsLevel());
   rafId = requestAnimationFrame(monitor);
 }
 
-function runDemoResponse() {
-  clearTimeout(transitionTimer);
-  setState('thinking');
+function isStopPhrase(transcript) {
+  const normalized = transcript
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[.!?¡¿,;:]+$/g, '');
+  return STOP_PHRASES.has(normalized);
+}
 
-  transitionTimer = setTimeout(() => {
-    setState('speaking');
-    transitionTimer = setTimeout(() => {
-      if (!muted && stream) setState('listening');
-    }, 1600);
-  }, 900);
+function trimmedConversation() {
+  const system = conversation[0];
+  const recent = conversation.slice(1).slice(-12);
+  return [system, ...recent];
+}
+
+async function handleTranscript(transcript) {
+  if (!sessionActive || muted || processing || !transcript) return;
+
+  trace('stt-final', { transcript });
+
+  if (isStopPhrase(transcript)) {
+    trace('stop-phrase', { transcript });
+    stopSession();
+    return;
+  }
+
+  processing = true;
+  stt.stop();
+  hideError();
+  const startedAt = performance.now();
+  setState(
+    'thinking',
+    DEBUG ? `STT ✓ “${transcript}” • calling ${modelName}` : `${modelName} • local inference`,
+  );
+  conversation.push({ role: 'user', content: transcript });
+
+  let turnFailed = false;
+
+  try {
+    trace('ollama-request', { model: modelName, messages: trimmedConversation().length });
+    const answer = await provider.chat(trimmedConversation());
+    const modelMs = Math.round(performance.now() - startedAt);
+    trace('ollama-response', { modelMs, chars: answer.length, preview: answer.slice(0, 120) });
+    conversation.push({ role: 'assistant', content: answer });
+
+    setState(
+      'speaking',
+      DEBUG ? `Ollama ✓ ${modelMs} ms • ${answer.length} chars • starting TTS` : 'Reply received • starting voice',
+    );
+
+    await tts.speak(answer);
+    trace('tts-end');
+  } catch (error) {
+    turnFailed = true;
+    trace('turn-error', { stage: turnStage, message: error?.message || String(error) });
+    console.error(error);
+    showError(`${error.message || 'The local model request failed.'} [stage: ${turnStage}]`);
+  } finally {
+    processing = false;
+
+    if (!sessionActive) return;
+    if (muted) {
+      setState('muted');
+      return;
+    }
+
+    setState(
+      'listening',
+      turnFailed && DEBUG ? `Turn failed at ${turnStage} • see error below` : listeningDetail(),
+    );
+    try {
+      stt.start();
+    } catch (error) {
+      handleSpeechRecognitionError(error);
+    }
+  }
 }
 
 async function activate() {
-  if (stream) return;
+  if (sessionActive) {
+    if (state === 'speaking') {
+      trace('tts-interrupt');
+      tts.cancel();
+    }
+    return;
+  }
+
   hideError();
 
+  if (!stt.supported) {
+    setState('error');
+    showError('This browser does not expose SpeechRecognition. Try a browser with Web Speech recognition support.');
+    return;
+  }
+
+  if (!tts.supported) {
+    setState('error');
+    showError('This browser does not expose speech synthesis.');
+    return;
+  }
+
+  setState('connecting', OLLAMA_BASE_URL);
+  trace('connect-start', { ollama: OLLAMA_BASE_URL, requestedModel: REQUESTED_MODEL, lang: SPEECH_LANG });
+
   try {
+    provider = new OllamaProvider({
+      baseUrl: OLLAMA_BASE_URL,
+      model: REQUESTED_MODEL,
+    });
+
+    const ollama = await provider.connect();
+    modelName = ollama.model;
+    trace('ollama-connected', { model: modelName, models: ollama.models });
+
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -114,49 +260,93 @@ async function activate() {
     samples = new Float32Array(analyser.fftSize);
     source.connect(analyser);
 
+    sessionActive = true;
     muteBtn.disabled = false;
     stopBtn.disabled = false;
     orb.setAttribute('aria-label', 'Voice session active');
-    setState('listening');
+    trace('session-ready', { model: modelName });
+    setState('listening', listeningDetail());
     monitor();
+    stt.start();
   } catch (error) {
+    trace('activation-error', { message: error?.message || String(error) });
     console.error(error);
     setState('error');
-    showError('Could not access the microphone. Use HTTPS or localhost and allow microphone permission.');
+    showError(formatActivationError(error));
+    cleanupMedia();
   }
 }
 
+function formatActivationError(error) {
+  const message = error?.message || 'Could not start the voice session.';
+
+  if (message.includes('Ollama') || message.includes('model')) {
+    return `${message} Start Ollama and install a chat model, then try again.`;
+  }
+
+  return `${message} Use http://127.0.0.1 or HTTPS and allow microphone permission.`;
+}
+
+function handleSpeechRecognitionError(error) {
+  trace('stt-error', { message: error?.message || String(error) });
+  console.error(error);
+  if (!sessionActive) return;
+  showError(error.message || 'Speech recognition failed.');
+}
+
 function toggleMute() {
-  if (!stream) return;
+  if (!sessionActive || !stream) return;
+
   muted = !muted;
   stream.getAudioTracks().forEach(track => { track.enabled = !muted; });
   muteBtn.textContent = muted ? 'Unmute' : 'Mute';
   muteBtn.setAttribute('aria-pressed', String(muted));
-  setState(muted ? 'muted' : 'listening');
-  speechStartedAt = 0;
-  lastVoiceAt = 0;
+
+  if (muted) {
+    trace('muted');
+    stt.stop();
+    setState('muted');
+  } else if (!processing) {
+    trace('unmuted');
+    setState('listening', listeningDetail());
+    try {
+      stt.start();
+    } catch (error) {
+      handleSpeechRecognitionError(error);
+    }
+  }
 }
 
-function stopSession() {
-  clearTimeout(transitionTimer);
+function cleanupMedia() {
   cancelAnimationFrame(rafId);
   stream?.getTracks().forEach(track => track.stop());
   audioContext?.close();
-
   stream = undefined;
   audioContext = undefined;
   analyser = undefined;
   samples = undefined;
+  setMeter(0);
+}
+
+function stopSession() {
+  trace('session-stop');
+  stt.abort();
+  tts.cancel();
+  cleanupMedia();
+
+  sessionActive = false;
+  provider = null;
+  modelName = null;
+  processing = false;
   muted = false;
-  speechStartedAt = 0;
-  lastVoiceAt = 0;
+  conversation = [{ role: 'system', content: SYSTEM_PROMPT }];
 
   muteBtn.textContent = 'Mute';
   muteBtn.setAttribute('aria-pressed', 'false');
   muteBtn.disabled = true;
   stopBtn.disabled = true;
   orb.setAttribute('aria-label', 'Activate microphone');
-  setMeter(0);
+  hideError();
   setState('idle');
 }
 
@@ -174,7 +364,7 @@ orb.addEventListener('click', activate);
 muteBtn.addEventListener('click', toggleMute);
 stopBtn.addEventListener('click', stopSession);
 window.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && stream) stopSession();
+  if (event.key === 'Escape' && sessionActive) stopSession();
 });
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {

@@ -148,6 +148,11 @@ button { font: inherit; }
   font-size: .9rem;
 }
 
+.shell[data-state="connecting"] .orb-core {
+  filter: saturate(.85) brightness(.92);
+  animation: think 1.2s ease-in-out infinite alternate;
+}
+
 .shell[data-state="listening"] .orb-core {
   filter: saturate(1.2) brightness(1.12);
 }
