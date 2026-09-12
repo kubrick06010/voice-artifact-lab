@@ -19,6 +19,36 @@ Do not merge `feat/ollama-local` into `main` until the real-machine checks below
 - [ ] The response is spoken aloud.
 - [ ] The artifact returns to `listening` automatically.
 
+## Debug mode
+
+If a turn enters `thinking` but no audible response arrives, run with:
+
+```text
+http://127.0.0.1:8000/?model=qwen3:4b&lang=es-ES&debug=1
+```
+
+The detail line will identify each successful boundary:
+
+1. `STT ✓` — final transcript received.
+2. `Ollama ✓` — `/api/chat` returned a non-empty response.
+3. `TTS ✓` — the browser/OS speech engine actually started speaking.
+
+If a turn fails, the on-screen error includes the last stage. The same events are available in DevTools as `window.__voiceArtifactDebug.events`.
+
+To isolate Ollama independently of the browser speech layer:
+
+```bash
+curl http://127.0.0.1:11434/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3:4b","messages":[{"role":"user","content":"Responde solamente: prueba recibida"}],"stream":false}'
+```
+
+To isolate browser TTS in DevTools:
+
+```js
+speechSynthesis.speak(new SpeechSynthesisUtterance('prueba de voz'))
+```
+
 ## Conversation context
 
 - [ ] Ask a first question that establishes a fact or subject.
