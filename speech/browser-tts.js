@@ -10,9 +10,10 @@ function selectVoice(lang) {
 }
 
 export class BrowserSpeechSynthesis {
-  constructor({ lang } = {}) {
+  constructor({ lang, onStart } = {}) {
     this.supported = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
     this.lang = lang || navigator.language || 'en-US';
+    this.onStart = onStart;
     this.current = null;
     this.finishCurrent = null;
   }
@@ -22,7 +23,9 @@ export class BrowserSpeechSynthesis {
       return Promise.reject(new Error('Speech synthesis is not supported by this browser.'));
     }
 
-    this.cancel();
+    // Calling cancel() immediately before the first utterance can make some
+    // browser/OS combinations swallow that utterance. Only cancel real work.
+    if (this.current) this.cancel();
 
     return new Promise((resolve, reject) => {
       const utterance = new SpeechSynthesisUtterance(text);
@@ -34,15 +37,29 @@ export class BrowserSpeechSynthesis {
       if (voice) utterance.voice = voice;
 
       let settled = false;
+      let started = false;
+      const startupTimer = setTimeout(() => {
+        if (!started) finish(new Error('Speech synthesis did not start. The browser/OS TTS engine may be blocked or unavailable.'));
+      }, 4000);
+
       const finish = (error = null) => {
         if (settled) return;
         settled = true;
+        clearTimeout(startupTimer);
         if (this.current === utterance) {
           this.current = null;
           this.finishCurrent = null;
         }
         if (error) reject(error);
         else resolve();
+      };
+
+      utterance.onstart = () => {
+        started = true;
+        this.onStart?.({
+          lang: utterance.lang,
+          voice: utterance.voice?.name || null,
+        });
       };
 
       utterance.onend = () => finish();
