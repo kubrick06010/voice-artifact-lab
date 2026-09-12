@@ -1,5 +1,14 @@
-const CACHE = 'voice-artifact-v0-1';
-const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest'];
+const CACHE = 'voice-artifact-ollama-v1';
+const ASSETS = [
+  './',
+  './index.html',
+  './styles.css',
+  './app.js',
+  './manifest.webmanifest',
+  './providers/ollama.js',
+  './speech/browser-stt.js',
+  './speech/browser-tts.js',
+];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)));
