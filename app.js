@@ -16,6 +16,7 @@ const params = new URLSearchParams(location.search);
 const OLLAMA_BASE_URL = params.get('ollama') || 'http://127.0.0.1:11434';
 const REQUESTED_MODEL = params.get('model') || null;
 const SPEECH_LANG = params.get('lang') || navigator.language || 'es-ES';
+const DEBUG = params.get('debug') === '1';
 
 const SYSTEM_PROMPT = [
   'You are a voice assistant in a voice-only interface.',
@@ -58,9 +59,35 @@ let processing = false;
 let provider = null;
 let modelName = null;
 let sessionActive = false;
+let turnStage = 'idle';
 let conversation = [{ role: 'system', content: SYSTEM_PROMPT }];
+const debugEvents = [];
 
-const tts = new BrowserSpeechSynthesis({ lang: SPEECH_LANG });
+function trace(stage, data = {}) {
+  turnStage = stage;
+  const entry = { at: new Date().toISOString(), stage, ...data };
+  debugEvents.push(entry);
+  if (debugEvents.length > 50) debugEvents.shift();
+  console.debug('[voice-artifact]', entry);
+}
+
+window.__voiceArtifactDebug = {
+  events: debugEvents,
+  get state() { return state; },
+  get stage() { return turnStage; },
+  get model() { return modelName; },
+};
+
+const tts = new BrowserSpeechSynthesis({
+  lang: SPEECH_LANG,
+  onStart: ({ voice, lang }) => {
+    trace('tts-start', { voice, lang });
+    if (DEBUG && state === 'speaking') {
+      detailEl.textContent = `TTS ✓ ${voice || 'system default'} • ${lang}`;
+    }
+  },
+});
+
 const stt = new BrowserSpeechRecognition({
   lang: SPEECH_LANG,
   onTranscript: transcript => handleTranscript(transcript),
@@ -76,7 +103,8 @@ function setState(next, detailOverride) {
 }
 
 function listeningDetail() {
-  return modelName ? `${modelName} • Ollama local` : COPY.listening[1];
+  const base = modelName ? `${modelName} • Ollama local` : COPY.listening[1];
+  return DEBUG ? `${base} • debug on` : base;
 }
 
 function setMeter(level = 0) {
@@ -120,7 +148,10 @@ function trimmedConversation() {
 async function handleTranscript(transcript) {
   if (!sessionActive || muted || processing || !transcript) return;
 
+  trace('stt-final', { transcript });
+
   if (isStopPhrase(transcript)) {
+    trace('stop-phrase', { transcript });
     stopSession();
     return;
   }
@@ -128,17 +159,34 @@ async function handleTranscript(transcript) {
   processing = true;
   stt.stop();
   hideError();
-  setState('thinking', `${modelName} • local inference`);
+  const startedAt = performance.now();
+  setState(
+    'thinking',
+    DEBUG ? `STT ✓ “${transcript}” • calling ${modelName}` : `${modelName} • local inference`,
+  );
   conversation.push({ role: 'user', content: transcript });
 
+  let turnFailed = false;
+
   try {
+    trace('ollama-request', { model: modelName, messages: trimmedConversation().length });
     const answer = await provider.chat(trimmedConversation());
+    const modelMs = Math.round(performance.now() - startedAt);
+    trace('ollama-response', { modelMs, chars: answer.length, preview: answer.slice(0, 120) });
     conversation.push({ role: 'assistant', content: answer });
-    setState('speaking');
+
+    setState(
+      'speaking',
+      DEBUG ? `Ollama ✓ ${modelMs} ms • ${answer.length} chars • starting TTS` : 'Reply received • starting voice',
+    );
+
     await tts.speak(answer);
+    trace('tts-end');
   } catch (error) {
+    turnFailed = true;
+    trace('turn-error', { stage: turnStage, message: error?.message || String(error) });
     console.error(error);
-    showError(error.message || 'The local model request failed.');
+    showError(`${error.message || 'The local model request failed.'} [stage: ${turnStage}]`);
   } finally {
     processing = false;
 
@@ -148,7 +196,10 @@ async function handleTranscript(transcript) {
       return;
     }
 
-    setState('listening', listeningDetail());
+    setState(
+      'listening',
+      turnFailed && DEBUG ? `Turn failed at ${turnStage} • see error below` : listeningDetail(),
+    );
     try {
       stt.start();
     } catch (error) {
@@ -159,7 +210,10 @@ async function handleTranscript(transcript) {
 
 async function activate() {
   if (sessionActive) {
-    if (state === 'speaking') tts.cancel();
+    if (state === 'speaking') {
+      trace('tts-interrupt');
+      tts.cancel();
+    }
     return;
   }
 
@@ -178,6 +232,7 @@ async function activate() {
   }
 
   setState('connecting', OLLAMA_BASE_URL);
+  trace('connect-start', { ollama: OLLAMA_BASE_URL, requestedModel: REQUESTED_MODEL, lang: SPEECH_LANG });
 
   try {
     provider = new OllamaProvider({
@@ -187,6 +242,7 @@ async function activate() {
 
     const ollama = await provider.connect();
     modelName = ollama.model;
+    trace('ollama-connected', { model: modelName, models: ollama.models });
 
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -208,10 +264,12 @@ async function activate() {
     muteBtn.disabled = false;
     stopBtn.disabled = false;
     orb.setAttribute('aria-label', 'Voice session active');
+    trace('session-ready', { model: modelName });
     setState('listening', listeningDetail());
     monitor();
     stt.start();
   } catch (error) {
+    trace('activation-error', { message: error?.message || String(error) });
     console.error(error);
     setState('error');
     showError(formatActivationError(error));
@@ -230,6 +288,7 @@ function formatActivationError(error) {
 }
 
 function handleSpeechRecognitionError(error) {
+  trace('stt-error', { message: error?.message || String(error) });
   console.error(error);
   if (!sessionActive) return;
   showError(error.message || 'Speech recognition failed.');
@@ -244,9 +303,11 @@ function toggleMute() {
   muteBtn.setAttribute('aria-pressed', String(muted));
 
   if (muted) {
+    trace('muted');
     stt.stop();
     setState('muted');
   } else if (!processing) {
+    trace('unmuted');
     setState('listening', listeningDetail());
     try {
       stt.start();
@@ -268,6 +329,7 @@ function cleanupMedia() {
 }
 
 function stopSession() {
+  trace('session-stop');
   stt.abort();
   tts.cancel();
   cleanupMedia();
