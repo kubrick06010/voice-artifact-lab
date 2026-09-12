@@ -114,6 +114,66 @@ Ollama permits local web origins by default. If you host the artifact from anoth
 
 The in-memory conversation sent to Ollama is bounded to the most recent turns so the prototype does not grow context indefinitely.
 
+## Memory profile
+
+Voice turns do not need a huge context window. The provider therefore explicitly requests a conservative runtime profile instead of inheriting a potentially large global Ollama context setting:
+
+- `num_ctx: 2048`
+- `num_predict: 128`
+- `think: false`
+- `keep_alive: 2m`
+
+This is intended to reduce KV-cache and generation memory while we validate the interaction loop.
+
+## Troubleshooting `llama-server ... signal: killed`
+
+If the browser reports an Ollama HTTP 500 with a message such as:
+
+```text
+llama-server process has terminated: signal: killed
+```
+
+then the browser successfully reached Ollama but the model runner itself was terminated before it could return a response. Treat this as an Ollama/runtime or memory problem rather than an STT/TTS problem.
+
+First isolate the model outside the artifact:
+
+```bash
+curl http://127.0.0.1:11434/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model":"qwen3:4b",
+    "messages":[{"role":"user","content":"Di solamente: prueba recibida"}],
+    "stream":false,
+    "think":false,
+    "keep_alive":"0",
+    "options":{"num_ctx":1024,"num_predict":32}
+  }'
+```
+
+If that also kills the runner, try a much smaller control model:
+
+```bash
+ollama pull qwen3:0.6b
+```
+
+and repeat the request with `"model":"qwen3:0.6b"`.
+
+Interpretation:
+
+- `qwen3:0.6b` works but `qwen3:4b` dies: likely memory pressure/model-load issue on that machine.
+- both models die: investigate Ollama installation/runtime before changing the artifact.
+- direct curl works but the artifact fails: investigate our provider request shape.
+
+Useful macOS diagnostics:
+
+```bash
+ollama --version
+ollama ps
+sysctl -n hw.memsize
+memory_pressure
+ tail -n 120 ~/.ollama/logs/server.log
+```
+
 ## Current limitations
 
 - No wake word yet.
