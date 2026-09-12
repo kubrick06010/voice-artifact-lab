@@ -6,27 +6,31 @@ The project should progress from interaction research to a portable voice runtim
 
 Goal: specify what the assistant should feel like before building it.
 
-- [ ] Define states: `idle`, `armed`, `listening`, `thinking`, `speaking`, `error`.
+- [x] Define core states: `idle`, `listening`, `thinking`, `speaking`, `muted`, `error`.
 - [ ] Define wake-word behavior.
 - [ ] Define barge-in / interruption behavior.
 - [ ] Define explicit stop phrases.
-- [ ] Define inactivity and silence timeouts.
-- [ ] Decide what visible UI, if any, is required.
-- [ ] Define privacy indicators for an open microphone.
+- [x] Establish an initial speech/silence transition threshold for browser experiments.
+- [x] Decide early visible UI: status orb + minimal controls, no chat UI.
+- [x] Provide a clear privacy indicator while microphone capture is active.
 
 Exit condition: a small state-machine specification that can be implemented independently of model/provider details.
+
+**Status:** partially complete. The V0 state machine is now executable in the browser; wake word and barge-in semantics remain to be specified.
 
 ## Phase 1 — Browser artifact
 
 Goal: prove the experience with the lowest hardware friction.
 
-- [ ] Minimal full-screen / PWA-style artifact.
-- [ ] Microphone permission and audio output.
+- [x] Minimal full-screen / PWA-style artifact.
+- [x] Microphone permission and local audio capture.
 - [ ] Realtime voice session.
-- [ ] Visual state indicator only; no traditional chat UI.
+- [x] Visual state indicator only; no traditional chat UI.
 - [ ] Barge-in.
-- [ ] Session timeout and return to idle.
-- [ ] Instrument basic latency measurements.
+- [x] Explicit end and return to idle.
+- [ ] Instrument end-to-end latency measurements once a realtime transport exists.
+
+V0 currently simulates `thinking` and `speaking` after local voice activity detection. No captured audio is transmitted.
 
 Exit condition: open artifact → activate → converse naturally → interrupt → end → return to idle.
 
