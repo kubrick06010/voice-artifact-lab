@@ -4,6 +4,12 @@ function normalizeBaseUrl(value) {
   return (value || DEFAULT_BASE_URL).replace(/\/$/, '');
 }
 
+function clampInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -16,10 +22,17 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
 }
 
 export class OllamaProvider {
-  constructor({ baseUrl = DEFAULT_BASE_URL, model = null } = {}) {
+  constructor({
+    baseUrl = DEFAULT_BASE_URL,
+    model = null,
+    contextLength = 2048,
+    maxOutputTokens = 128,
+  } = {}) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.requestedModel = model;
     this.model = null;
+    this.contextLength = clampInteger(contextLength, 2048, 512, 8192);
+    this.maxOutputTokens = clampInteger(maxOutputTokens, 128, 32, 512);
   }
 
   async connect() {
@@ -56,6 +69,8 @@ export class OllamaProvider {
       baseUrl: this.baseUrl,
       model: this.model,
       models: models.map(item => item.name || item.model).filter(Boolean),
+      contextLength: this.contextLength,
+      maxOutputTokens: this.maxOutputTokens,
     };
   }
 
@@ -74,7 +89,12 @@ export class OllamaProvider {
           messages,
           stream: false,
           think: false,
-          keep_alive: '10m',
+          keep_alive: '2m',
+          options: {
+            num_ctx: this.contextLength,
+            num_predict: this.maxOutputTokens,
+            temperature: 0.5,
+          },
         }),
       }, 120000);
     } catch (error) {
