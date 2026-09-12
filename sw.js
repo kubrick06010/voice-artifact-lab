@@ -1,4 +1,4 @@
-const CACHE = 'voice-artifact-ollama-v1';
+const CACHE = 'voice-artifact-ollama-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -24,5 +24,19 @@ self.addEventListener('activate', event => {
 
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
-  event.respondWith(caches.match(event.request).then(hit => hit || fetch(event.request)));
+
+  // During development/testing, prefer the network so branch updates are not
+  // hidden by a stale service-worker cache. Fall back to the cached shell if
+  // the network is unavailable.
+  event.respondWith(
+    fetch(event.request)
+      .then(response => {
+        if (response.ok && new URL(event.request.url).origin === self.location.origin) {
+          const copy = response.clone();
+          caches.open(CACHE).then(cache => cache.put(event.request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
+  );
 });
