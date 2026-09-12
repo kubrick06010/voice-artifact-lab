@@ -1,0 +1,9 @@
+{
+  "name": "Voice Artifact Lab",
+  "short_name": "Voice Lab",
+  "description": "Voice-only assistant interaction prototype.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0b0f14",
+  "theme_color": "#0b0f14"
+}
